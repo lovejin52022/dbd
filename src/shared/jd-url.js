@@ -67,6 +67,7 @@ function parseProductDetailUrl(urlString) {
 
     return {
       auctionId,
+      id: auctionId, // 列表主键别名，与 auctionId 相同
       skuid,
       cprice,
       url: urlString.trim(),
