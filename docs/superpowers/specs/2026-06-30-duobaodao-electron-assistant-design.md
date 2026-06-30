@@ -1,6 +1,6 @@
 # 多宝岛 Electron 助手设计
 
-日期：2026-06-30（修订：自动抢购调度）
+日期：2026-06-30（修订：自动抢购调度、生命周期状态、SQLite 存储）
 
 ## 目标
 
@@ -26,7 +26,7 @@
 - 「首页」快捷入口：`https://dbd.m.jd.com/ppdbd/paimai`
 - 识别商品详情页 URL，解析 `auctionId`（查询参数 `id`）与 `skuid`
 - 加入抢单列表、编辑备注/期望价、删除、快速重新打开
-- 本地 JSON 持久化（Electron `userData` 目录）
+- 本地 SQLite 数据库持久化（Electron `userData` 目录）：抢单列表、详情快照、出价记录
 
 **API 集成（经 Webview + ParamsSign）**
 
@@ -34,23 +34,23 @@
 |-----------|------|---------|
 | `dbd.auction.detail.v2` | 抢购详情（含抢购开始时间） | 加入列表 |
 | `dbd.auction.detail.saleInfo` | 销售/地址信息（`address`/`area`） | 加入列表 |
-| `paipai.auction.bidrecords` | 出价记录 | 60s 慢轮询 |
-| `paipai.auction.get_current_and_offerNum` | 抢购状态 | 60s 慢轮询 + 快轮询 |
+| `paipai.auction.bidrecords` | 出价记录 | 抢购中 60s 慢轮询；切换已过期时调用一次 |
+| `paipai.auction.get_current_and_offerNum` | 抢购状态 | 仅抢购中：60s 慢轮询 + 快轮询 |
 | `paipai.auction.offerPrice` | 自动出价/下单 | 精准触发（开关开启时） |
 
 批量查询时 `auctionId` 可传多个（逗号分隔或数组，以实现为准）。
 
 **调度行为**
 
-- 加入列表：并行请求 `detail.v2` + `saleInfo`
-- 慢轮询（始终）：每 60 秒拉取出价记录 + 抢购状态，更新侧栏
+- 加入列表：并行请求 `detail.v2` + `saleInfo`，写入本地数据库；若加入时已过期，标记「已过期」并调用一次出价记录
+- 慢轮询（仅「抢购中」条目）：每 60 秒拉取出价记录 + 抢购状态，更新侧栏与数据库
 - 快轮询（仅 `autoOrderEnabled=true`）：距抢购开始 ≤10 秒，以 10–100ms 随机间隔轮询抢购状态
 - 精准出价（仅 `autoOrderEnabled=true`）：距抢购开始 80–100ms（随机）时调用 `offerPrice`，每条目仅触发一次
 
 **自动下单开关**
 
 - 每条列表项独立开关，**默认关闭**
-- 关闭时：仍执行慢轮询与侧栏展示，不进入快轮询、不自动出价
+- 关闭时：若条目为「抢购中」仍参与慢轮询；不进入快轮询、不自动出价
 - 开启时：进入 10 秒窗口后启动快轮询与精准出价
 
 ### 不包含
@@ -72,7 +72,7 @@
 
 ### 进程职责
 
-- **主进程**：BrowserWindow、session、桌面通知、JSON 存储、IPC、`AuctionScheduler`（时间调度与状态机）
+- **主进程**：BrowserWindow、session、桌面通知、SQLite 存储、IPC、`AuctionScheduler`（时间调度与状态机）
 - **渲染进程**：工具栏、侧栏 UI、本地交互状态
 - **Webview**：已登录多宝岛页面，提供 `ParamsSign` 与 cookie；通过注入脚本执行签名 API 调用
 
@@ -82,7 +82,7 @@
 
 ```
 主进程 AuctionScheduler
-  ├── 60s 慢轮询（全量活跃条目，可批量 auctionId）
+  ├── 60s 慢轮询（仅 lifecycleStatus=抢购中，可批量 id）
   ├── 倒计时 Watch（仅 autoOrderEnabled=true）
   └── 精准触发器（80–100ms，setTimeout + 时钟偏移校准）
          ↓ IPC
@@ -122,72 +122,144 @@ Webview callJdApi(functionId, body)
 
 ## 抢单列表
 
-### 基础字段
+### 主键与去重
+
+- 列表项 `id` **直接取商品页 URL 查询参数 `id`**（即平台 `auctionId`），不再生成本地 UUID
+- 同一商品重复加入时 **upsert**：刷新详情快照，保留用户备注/期望价/自动下单开关（若用户未改）
+
+### 基础字段（表 `auction_list`）
 
 | 字段 | 说明 |
 |------|------|
-| `id` | 本地 UUID |
-| `auctionId` | URL 查询参数 `id` |
+| `id` | 商品页 `id`（主键，字符串） |
 | `skuid` | URL 查询参数 `skuid`，缺失为 `null` |
-| `title` | 页面标题或兜底标题 |
+| `title` | 页面标题或详情接口解析标题 |
 | `url` | 详情页 URL |
-| `addedAt` | ISO 时间戳 |
+| `addedAt` | 首次加入时间（ISO） |
+| `updatedAt` | 最近更新时间（ISO） |
 | `note` | 用户备注 |
 | `targetPrice` | 用户可选期望价 |
 
-### 调度扩展字段
+### 生命周期状态
+
+字段 `lifecycleStatus`，取值：
+
+| 状态 | 含义 | API 行为 |
+|------|------|---------|
+| `not_started` | 未开始 | 仅在加入时拉取一次详情；开始前不周期性刷新任何 API |
+| `in_progress` | 抢购中 | 60s 慢轮询出价记录 + 抢购状态；可进入快轮询/精准出价 |
+| `expired` | 已过期 | 停止轮询；切换到此状态时 **额外调用一次出价记录** 并落库 |
+
+状态判定（实现时按 API 响应映射，优先级从高到低）：
+
+1. 抢购状态接口 / 详情接口中的状态码表明已结束 → `expired`
+2. 当前服务器时间 ≥ 详情中的抢购结束时间（若有） → `expired`
+3. 当前服务器时间 ≥ 抢购开始时间且未结束 → `in_progress`
+4. 否则 → `not_started`
+
+加入列表时根据 detail.v2 响应立即计算初始 `lifecycleStatus`。若加入时已为 `expired`，保存条目后立即请求一次 `bidrecords` 并写入 `bid_records` 表。
+
+状态迁移：
+
+```
+not_started → in_progress（到达开始时间或 API 状态变更）
+in_progress → expired（结束时间到达或 API 状态变更）
+expired（终态，不再轮询）
+```
+
+迁移到 `expired` 时：触发一次 `bidrecords` 请求，保存结果，取消该条目的所有定时器。
+
+### 调度扩展字段（表 `auction_list`）
 
 | 字段 | 说明 |
 |------|------|
 | `autoOrderEnabled` | 自动下单开关，默认 `false` |
+| `lifecycleStatus` | `not_started` / `in_progress` / `expired` |
 | `auctionStartTime` | 详情接口解析的抢购开始时间（ms） |
-| `address` | saleInfo 解析的区域 ID，供 bidrecords / offerPrice 使用 |
+| `auctionEndTime` | 详情接口解析的抢购结束时间（ms，可选） |
+| `address` | saleInfo 解析的区域 ID |
 | `currentPrice` | 最近一次抢购状态中的当前价 |
 | `bidCount` | 出价人数 |
-| `auctionStatus` | 抢购状态码 |
-| `serverTimeOffset` | 本地与服务器时钟偏移（ms），滑动平均 |
+| `auctionStatus` | 平台原始状态码 |
+| `serverTimeOffset` | 本地与服务器时钟偏移（ms） |
 | `orderResult` | `pending` / `success` / `failed` / `skipped` |
 | `orderError` | 失败时的错误码或消息 |
 | `lastPolledAt` | 最近慢/快轮询时间 |
 | `schedulerPhase` | `idle` / `slow_poll` / `fast_poll` / `firing` / `done` |
 
+### 本地数据库（SQLite）
+
+数据库文件：`userData/duobaodao.db`，使用 `better-sqlite3`（或等价同步 SQLite 驱动）。
+
+**表 `auction_list`**：抢单列表条目（上文字段）。
+
+**表 `auction_detail`**：详情快照，按 `auctionId`（= 列表 `id`）关联。
+
+| 字段 | 说明 |
+|------|------|
+| `auctionId` | 外键，对应列表 `id` |
+| `fetchedAt` | 拉取时间 |
+| `detailJson` | `detail.v2` 完整响应 JSON |
+| `saleInfoJson` | `saleInfo` 完整响应 JSON |
+
+加入列表或手动刷新时插入新快照（保留历史，侧栏默认展示最新一条）。
+
+**表 `bid_records`**：出价记录快照。
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 自增主键 |
+| `auctionId` | 外键 |
+| `fetchedAt` | 拉取时间 |
+| `recordsJson` | `bidrecords` 完整响应 JSON |
+
+每次慢轮询、过期迁移触发的出价记录请求均插入一条，侧栏/详情页展示最新快照。
+
 ### 加入列表流程
 
-1. 解析 URL → `auctionId`、`skuid`
-2. 并行请求 `dbd.auction.detail.v2` + `dbd.auction.detail.saleInfo`
-3. 从 detail 写入 `auctionStartTime`、标题等；从 saleInfo 写入 `address`
-   - `auctionStartTime`：取自 detail.v2 响应中的抢购开始时间字段（实现时按实际 JSON 结构映射）
-   - `address`：取自 saleInfo 响应中的区域 ID 字段，同时作为 bidrecords 的 `area` 与 offerPrice 的 `address`
-4. 持久化并注册到慢轮询队列
-5. 若任一接口失败：仍保存条目，标记「数据不完整」，不参与自动下单（`schedulerPhase=idle`，侧栏提示补全）
+1. 解析 URL → `id`（商品页 id）、`skuid`
+2. 若 `id` 已存在 → upsert 模式，否则 insert
+3. 并行请求 `dbd.auction.detail.v2` + `dbd.auction.detail.saleInfo`
+4. 写入 `auction_detail` 快照；更新 `auctionStartTime`、`auctionEndTime`、`address`、标题
+5. 计算 `lifecycleStatus`：
+   - `expired` → 请求一次 `bidrecords`，写入 `bid_records`，注册为终态
+   - `not_started` → 注册「开始时间」监视，开始前不再请求任何 API（含 detail 刷新）
+   - `in_progress` → 注册慢轮询队列
+6. 若 detail/saleInfo 失败：仍保存列表条目，标记「数据不完整」，不参与调度
 
 ### 侧栏操作
 
-- 打开条目、编辑备注、编辑期望价、删除
-- **自动下单开关**（默认关）
-- 展示：当前价、出价人数、倒计时、最近轮询时间、调度阶段、下单结果
+- 打开条目、编辑备注、编辑期望价、删除（级联删除关联 detail/bid_records 或软删除，实现时二选一，默认硬删除关联数据）
+- **自动下单开关**（默认关，仅 `in_progress` 且未过期时可开启）
+- 展示：`lifecycleStatus`（未开始 / 抢购中 / 已过期）、当前价、出价人数、倒计时、最近轮询时间、下单结果
 
 ## 调度器
 
 ### 状态机
 
+调度阶段（`schedulerPhase`）与生命周期（`lifecycleStatus`）协同：
+
 ```
-idle → slow_poll（加入列表后）
-  → fast_poll（≤10s 且 autoOrderEnabled）
-  → firing（80–100ms 触发窗口）
-  → done / failed
+[lifecycleStatus=not_started] → 监视开始时间，无 API 轮询
+  → [in_progress] → slow_poll（60s：bidrecords + status）
+  → [autoOrderEnabled] → fast_poll（≤10s）→ firing（80–100ms）→ done/failed
+  → [expired] → 一次 bidrecords → 停止所有调度
 ```
 
-- `autoOrderEnabled` false→true：若已在 10 秒窗口内，立即进入 `fast_poll`
-- `autoOrderEnabled` true→false：停止 `fast_poll`/`firing`，保留 `slow_poll`
-- 抢购时间已过且未触发：标记 `done`
+- 仅 `lifecycleStatus=in_progress` 的条目进入慢轮询与快轮询
+- `not_started`：到达 `auctionStartTime` 后转为 `in_progress` 并加入慢轮询（开始前零轮询）
+- `in_progress → expired`：调用一次 `bidrecords`，写入 DB，取消定时器
+- `autoOrderEnabled` 仅对 `in_progress` 生效；过期或未开始时不允许开启（或自动关闭）
 
-### 慢轮询（始终执行）
+### 慢轮询（仅抢购中）
 
 - 间隔：默认 60 秒（可配置）
-- 范围：未过期条目（`auctionStartTime + 缓冲` 后移出活跃队列）
-- 请求：`bidrecords` + `get_current_and_offerNum`（支持批量 `auctionId`）
-- 副作用：更新侧栏字段；用状态响应校准 `serverTimeOffset`
+- 范围：`lifecycleStatus = in_progress` 的条目（支持批量 `id`）
+- 请求：`bidrecords` + `get_current_and_offerNum`
+- 副作用：
+  - 各响应写入 `bid_records` / 更新 `auction_list` 展示字段
+  - 校准 `serverTimeOffset`
+  - 根据响应检测是否应迁移为 `expired`
 
 时钟偏移计算：
 
@@ -196,7 +268,7 @@ offset = serverTime - Date.now()
 serverTimeOffset = 滑动平均(最近 N 次 offset)
 ```
 
-### 快轮询（仅 autoOrderEnabled=true）
+### 快轮询（仅 in_progress 且 autoOrderEnabled=true）
 
 - 触发：距 `auctionStartTime` ≤ 10 秒（基于校准后服务器时间）
 - 间隔：10–100ms 随机（`Math.random() * 90 + 10`）
@@ -294,7 +366,7 @@ scripts/jd-sign/
 - 加入列表时 detail/saleInfo 失败 → 保存条目，标记「数据不完整」，不参与自动下单
 - 快轮询阶段网络超时 → 仍按最后已知 `currentPrice` 执行出价
 - 多商品同时触发 → 各自独立 `setTimeout`，并行发出，不排队
-- 存储读写失败 → 同原设计（空列表启动、保留损坏文件、展示错误）
+- 存储读写失败 → SQLite 错误日志，尽量保留已有数据，展示错误
 
 ## 测试
 
@@ -302,9 +374,24 @@ scripts/jd-sign/
 
 - 应用启动加载默认「我的页面」
 - 登录 URL 检测改变工具栏状态
-- 详情页 URL 识别与 `auctionId`/`skuid` 解析
-- 加入列表持久化，重启后仍存在
-- 编辑、删除、期望价更新
+- 详情页 URL 识别与 `id`/`skuid` 解析
+- 列表 `id` 等于商品页 `id`；重复加入 upsert
+- 加入列表持久化到 SQLite，重启后仍存在
+- 编辑、删除、期望价更新；删除级联清理 detail/bid_records
+
+### 生命周期与轮询
+
+- `not_started` 条目仅在加入时拉详情，开始前不调用任何 API（含 bidrecords/status/detail 刷新）
+- 到达开始时间后转为 `in_progress` 并开始慢轮询
+- 仅 `in_progress` 条目参与 60s 慢轮询
+- 迁移到 `expired` 时触发一次 bidrecords 并落库，之后不再轮询
+- 加入时已过期条目：标记 `expired` + 一次 bidrecords
+
+### 数据库
+
+- `auction_list`、`auction_detail`、`bid_records` 三表写入正确
+- 每次 detail 拉取新增 `auction_detail` 快照
+- 每次 bidrecords 拉取新增 `bid_records` 快照
 
 ### 调度与 API
 
@@ -315,7 +402,7 @@ scripts/jd-sign/
 - `autoOrderEnabled=true` 且在 10 秒窗口内进入快轮询
 - 距抢购开始 80–100ms 触发 offerPrice，金额逻辑符合期望价规则
 - 下单成功/失败后 `orderResult` 与通知正确
-- 批量 auctionId 慢轮询合并请求
+- 批量 id 慢轮询合并请求
 - Webview 未登录时调度暂停并提示
 
 ### 金额逻辑用例
