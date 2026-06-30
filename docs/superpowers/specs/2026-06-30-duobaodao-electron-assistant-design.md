@@ -1,100 +1,100 @@
-# Duobaodao Electron Assistant Design
+# 多宝岛 Electron 助手设计
 
-Date: 2026-06-30
+日期：2026-06-30
 
-## Goal
+## 目标
 
-Build a desktop-only frontend assistant for Duobaodao using Electron. The app opens JD Duobaodao pages, keeps the user's login session, lets the user manually browse and search products, and stores selected product detail pages in a local watch list for reminders and quick access.
+使用 Electron 构建一个仅前端的桌面助手。应用打开京东多宝岛页面，保留用户登录状态，让用户手动浏览和搜索商品，并把用户选中的商品详情页保存到本地抢单列表中，用于提醒和快速打开。
 
-The app does not automatically click order buttons, submit bids/orders, bypass login or CAPTCHA, or call private platform order APIs.
+应用不会自动点击下单、出价或抢单按钮，不会绕过登录或验证码，也不会调用平台的非公开下单、出价或抢单接口。
 
-## Scope
+## 范围
 
-In scope:
+包含：
 
-- Open the user page by default:
+- 默认打开“我的页面”：
   `https://dbd.m.jd.com/ppdbd/pages/mine/index?scene=null`
-- Detect when the current page is the JD login page:
+- 识别当前页面是否为京东登录页：
   `https://plogin.m.jd.com/login/login`
-- Let the user complete login manually inside the Electron window.
-- Preserve login state through Electron's normal session storage.
-- Provide a home shortcut:
+- 允许用户在 Electron 窗口中手动完成登录。
+- 通过 Electron 的正常 session 存储保留登录态。
+- 提供“首页”快捷入口：
   `https://dbd.m.jd.com/ppdbd/paimai`
-- Let the user search and open product detail pages manually in the embedded page.
-- Provide an app-side "add to watch list" action for the current product detail page.
-- Save watch list items locally with title, URL, added time, optional note, and optional target price.
-- Show, edit, remove, and quickly reopen watch list items.
-- Provide conservative reminder behavior based on visible page text and user-controlled refresh.
+- 用户在内嵌页面中手动搜索商品并打开商品详情页。
+- 在应用侧提供“加入抢单列表”操作，用于保存当前商品详情页。
+- 本地保存抢单列表条目，包括标题、URL、加入时间、可选备注和可选期望价。
+- 支持查看、编辑、删除和快速重新打开抢单列表条目。
+- 基于页面可见文本和用户可控刷新提供保守的提醒能力。
 
-Out of scope:
+不包含：
 
-- Automatic clicking of order or bid buttons.
-- Direct order, bid, or rush-purchase API requests.
-- Login bypass, CAPTCHA bypass, device fingerprint spoofing, request signing, or hidden automation.
-- High-frequency refresh or request loops.
+- 自动点击下单、出价或抢单按钮。
+- 直接发送下单、出价或抢单接口请求。
+- 绕过登录、绕过验证码、伪造设备指纹、生成请求签名或隐藏式自动化。
+- 高频刷新或请求循环。
 
-## Architecture
+## 架构
 
-The project will use Electron, Vite, and TypeScript.
+项目使用 Electron、Vite 和 TypeScript。
 
-The main window has three areas:
+主窗口分为三个区域：
 
-- Top toolbar: navigation and app controls.
-- Web content area: the JD Duobaodao mobile page.
-- Watch list side panel: local product entries and actions.
+- 顶部工具栏：导航和应用控制。
+- 网页内容区：京东多宝岛移动页面。
+- 抢单列表侧栏：本地商品条目和操作。
 
-Electron's main process owns the BrowserWindow, session behavior, desktop notifications, file storage, and IPC handlers. The renderer process owns the toolbar, side panel UI, and local interaction state. The JD page is isolated from the app UI; the app only reads the current URL, page title, and limited visible text needed for reminder detection.
+Electron 主进程负责 BrowserWindow、session 行为、桌面通知、文件存储和 IPC 处理。渲染进程负责工具栏、侧栏 UI 和本地交互状态。京东页面与应用 UI 保持隔离；应用只读取当前 URL、页面标题，以及提醒判断所需的有限可见文本。
 
-## Navigation
+## 导航
 
-On startup, the app loads:
+应用启动时加载：
 
 `https://dbd.m.jd.com/ppdbd/pages/mine/index?scene=null`
 
-If navigation reaches a URL beginning with:
+如果导航到以下开头的 URL：
 
 `https://plogin.m.jd.com/login/login`
 
-the toolbar displays a "need login" status. The page remains usable so the user can log in manually. After login succeeds, the app returns to normal browsing state and keeps the session.
+工具栏显示“需要登录”状态。页面保持可用，用户可以在窗口中手动登录。登录成功后，应用恢复正常浏览状态并保留 session。
 
-Toolbar actions:
+工具栏操作：
 
-- Open my page.
-- Open home page.
-- Refresh current page.
-- Go back when possible.
-- Clear session and reopen login flow.
-- Toggle notifications.
-- Toggle always-on-top.
+- 打开“我的页面”。
+- 打开“首页”。
+- 刷新当前页面。
+- 在可以后退时返回上一页。
+- 清除 session 并重新进入登录流程。
+- 开关提醒。
+- 开关窗口置顶。
 
-## Watch List
+## 抢单列表
 
-When the user is on a product detail page, they can click "add to watch list" in the app UI. The app records:
+当用户位于商品详情页时，可以点击应用 UI 中的“加入抢单列表”。应用记录：
 
-- `id`: generated locally.
-- `title`: current page title, or a fallback based on URL.
-- `url`: current detail page URL.
-- `addedAt`: ISO timestamp.
-- `note`: optional user text.
-- `targetPrice`: optional user value.
-- `lastSeenText`: optional latest reminder-related text snapshot.
-- `lastNotifiedAt`: optional timestamp to avoid repeated notification spam.
+- `id`：本地生成。
+- `title`：当前页面标题；如果读取失败，则使用基于 URL 的兜底标题。
+- `url`：当前详情页 URL。
+- `addedAt`：ISO 时间戳。
+- `note`：用户可选备注。
+- `targetPrice`：用户可选期望价。
+- `lastSeenText`：可选的最近一次提醒相关文本快照。
+- `lastNotifiedAt`：可选的最近提醒时间，用于避免重复提醒。
 
-The side panel supports:
+侧栏支持：
 
-- Open item.
-- Edit note.
-- Edit target price.
-- Remove item.
-- Show last checked or last notified time when available.
+- 打开条目。
+- 编辑备注。
+- 编辑期望价。
+- 删除条目。
+- 在有数据时显示最近检查时间或最近提醒时间。
 
-Storage uses a JSON file under Electron's `userData` directory so it survives app restarts without requiring a backend.
+存储使用 Electron `userData` 目录下的 JSON 文件。这样无需后端服务，也能在应用重启后保留数据。
 
-## Reminder Behavior
+## 提醒行为
 
-Reminder behavior stays conservative and user-controlled.
+提醒行为保持保守，并由用户控制。
 
-The app can inspect visible text from the currently opened page or from a watch-list item that the user opens. It looks for configurable keywords such as:
+应用可以检查当前打开页面，或用户打开的抢单列表条目页面中的可见文本。应用查找可配置关键词，例如：
 
 - `抢单`
 - `立即抢`
@@ -102,35 +102,35 @@ The app can inspect visible text from the currently opened page or from a watch-
 - `可抢`
 - `开拍`
 
-When a keyword appears, the app can:
+当关键词出现时，应用可以：
 
-- Show a desktop notification.
-- Play a short sound.
-- Bring the window to the front when enabled.
-- Mark the item as recently notified.
+- 显示桌面通知。
+- 播放短提示音。
+- 在用户开启时将窗口置前。
+- 标记该条目已经在近期提醒过。
 
-The app does not click any page button. The user completes all platform actions manually.
+应用不会点击任何页面按钮。所有平台内操作都由用户手动完成。
 
-Automatic refresh, if implemented in the first version, must default to a conservative interval of at least 30 seconds and be easy to turn off.
+如果第一版实现自动刷新，默认刷新间隔必须保守，至少为 30 秒，并且必须易于关闭。
 
-## Error Handling
+## 错误处理
 
-- If title extraction fails, save the URL and allow the user to rename or annotate the item later.
-- If storage read fails, start with an empty list and preserve the unreadable file if possible.
-- If storage write fails, show an app-side error message.
-- If the embedded page fails to load, show the failed URL and offer reload.
-- If notification permission or delivery fails, keep the visual in-app reminder active.
+- 如果标题读取失败，保存 URL，并允许用户之后重命名或添加备注。
+- 如果读取存储失败，从空列表开始，并尽量保留无法读取的原文件。
+- 如果写入存储失败，在应用侧显示错误信息。
+- 如果内嵌页面加载失败，显示失败 URL 并提供重新加载操作。
+- 如果桌面通知权限或投递失败，仍保留应用内视觉提醒。
 
-## Testing
+## 测试
 
-First-version verification should include:
+第一版验证应包括：
 
-- App starts and loads the default my page.
-- Login URL detection changes toolbar status.
-- Home shortcut navigates to the Duobaodao home page.
-- Refresh, back, and always-on-top controls work.
-- Adding a page to the watch list persists it to disk.
-- Watch list survives app restart.
-- Edit and remove actions update storage.
-- Reminder keyword detection triggers an in-app state change and desktop notification path when available.
-- No code path automatically clicks order buttons or sends order/bid API requests.
+- 应用启动后加载默认“我的页面”。
+- 登录 URL 检测会改变工具栏状态。
+- “首页”快捷入口能导航到多宝岛首页。
+- 刷新、后退和窗口置顶控制可用。
+- 加入抢单列表后，条目会持久化到磁盘。
+- 应用重启后抢单列表仍然存在。
+- 编辑和删除操作会更新存储。
+- 提醒关键词检测能触发应用内状态变化，并在可用时走桌面通知路径。
+- 不存在自动点击下单按钮或发送下单、出价、抢单接口请求的代码路径。
