@@ -10,7 +10,7 @@ import {
 import { calcOfferPrice } from '../../shared/order-price';
 import { resolveLifecycleStatus } from '../../shared/lifecycle';
 import { parseStatusResponse } from '../services/detail-parser';
-import type { JdApiService } from '../services/jd-api.service';
+import { isJdApiUnavailableError, type JdApiService } from '../services/jd-api.service';
 import { ClockSync } from './clock-sync';
 import { ItemRunner, type DbAuctionRow } from './item-runner';
 
@@ -22,12 +22,14 @@ export class AuctionScheduler {
   private slowTimer: NodeJS.Timeout | null = null;
   private runners = new Map<string, ItemRunner>();
   private clock = new ClockSync();
+  private paused = false;
 
   constructor(
     private db: Database.Database,
     private jdApi: JdApiService,
     private notify: (title: string, body: string) => void,
     private onListUpdated?: () => void,
+    private onPaused?: (reason: string) => void,
   ) {}
 
   start(): void {
@@ -42,6 +44,33 @@ export class AuctionScheduler {
     }
     for (const runner of this.runners.values()) runner.dispose();
     this.runners.clear();
+  }
+
+  /** Webview / ParamsSign 不可用时暂停调度 */
+  pause(_reason: string): void {
+    if (this.paused) return;
+    this.paused = true;
+    this.stop();
+  }
+
+  /** Webview 就绪后恢复调度 */
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.start();
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  /** 捕获不可用错误并暂停调度，返回 true 表示已处理 */
+  private handleApiUnavailable(err: unknown): boolean {
+    if (!isJdApiUnavailableError(err)) return false;
+    const reason = err instanceof Error ? err.message : String(err);
+    this.pause(reason);
+    this.onPaused?.(reason);
+    return true;
   }
 
   /** 配置变更后重建单条目 runner */
@@ -91,29 +120,33 @@ export class AuctionScheduler {
 
   /** 批量 status + 逐条 bidrecords，更新 DB 并检测过期 */
   private async runSlowPollFor(ids: string[]): Promise<void> {
-    const statusJson = await this.jdApi.call(
-      JD_FUNCTIONS.CURRENT_AND_OFFER,
-      buildStatusBody(ids),
-    );
-
-    for (const id of ids) {
-      const parsed = parseStatusResponse(statusJson, id);
-      if (parsed.serverTimeMs) this.clock.addSample(parsed.serverTimeMs);
-
-      const row = this.db
-        .prepare('SELECT address FROM auction_list WHERE id = ?')
-        .get(id) as { address: string | null } | undefined;
-      if (!row?.address) continue;
-
-      const bidJson = await this.jdApi.call(
-        JD_FUNCTIONS.BID_RECORDS,
-        buildBidRecordsBody(id, row.address),
+    try {
+      const statusJson = await this.jdApi.call(
+        JD_FUNCTIONS.CURRENT_AND_OFFER,
+        buildStatusBody(ids),
       );
-      insertBidRecordsSnapshot(this.db, id, bidJson);
-      this.updateListFromStatus(id, parsed, 'slow_poll');
-      this.maybeExpire(id, parsed);
+
+      for (const id of ids) {
+        const parsed = parseStatusResponse(statusJson, id);
+        if (parsed.serverTimeMs) this.clock.addSample(parsed.serverTimeMs);
+
+        const row = this.db
+          .prepare('SELECT address FROM auction_list WHERE id = ?')
+          .get(id) as { address: string | null } | undefined;
+        if (!row?.address) continue;
+
+        const bidJson = await this.jdApi.call(
+          JD_FUNCTIONS.BID_RECORDS,
+          buildBidRecordsBody(id, row.address),
+        );
+        insertBidRecordsSnapshot(this.db, id, bidJson);
+        this.updateListFromStatus(id, parsed, 'slow_poll');
+        this.maybeExpire(id, parsed);
+      }
+      this.onListUpdated?.();
+    } catch (err) {
+      this.handleApiUnavailable(err);
     }
-    this.onListUpdated?.();
   }
 
   /** 过期时拉一次 bidrecords 并标记终态 */
@@ -123,16 +156,21 @@ export class AuctionScheduler {
       .get(auctionId) as { address: string | null } | undefined;
     if (!row?.address) return;
 
-    const bidJson = await this.jdApi.call(
-      JD_FUNCTIONS.BID_RECORDS,
-      buildBidRecordsBody(auctionId, row.address),
-    );
-    insertBidRecordsSnapshot(this.db, auctionId, bidJson);
-    this.db
-      .prepare(
-        `UPDATE auction_list SET lifecycle_status = 'expired', scheduler_phase = 'done' WHERE id = ?`,
-      )
-      .run(auctionId);
+    try {
+      const bidJson = await this.jdApi.call(
+        JD_FUNCTIONS.BID_RECORDS,
+        buildBidRecordsBody(auctionId, row.address),
+      );
+      insertBidRecordsSnapshot(this.db, auctionId, bidJson);
+      this.db
+        .prepare(
+          `UPDATE auction_list SET lifecycle_status = 'expired', scheduler_phase = 'done' WHERE id = ?`,
+        )
+        .run(auctionId);
+    } catch (err) {
+      if (this.handleApiUnavailable(err)) return;
+      throw err;
+    }
   }
 
   /** 精准出价：每条目仅触发一次 */
@@ -168,6 +206,7 @@ export class AuctionScheduler {
         .run(auctionId);
       this.notify('出价成功', `商品 ${auctionId} 已提交出价 ${price} 元`);
     } catch (err) {
+      if (this.handleApiUnavailable(err)) return;
       const msg = err instanceof Error ? err.message : String(err);
       this.db
         .prepare(
@@ -180,13 +219,17 @@ export class AuctionScheduler {
 
   /** 快轮询：仅拉 status 更新现价与时钟 */
   private async pollStatus(auctionId: string): Promise<void> {
-    const statusJson = await this.jdApi.call(
-      JD_FUNCTIONS.CURRENT_AND_OFFER,
-      buildStatusBody(auctionId),
-    );
-    const parsed = parseStatusResponse(statusJson, auctionId);
-    if (parsed.serverTimeMs) this.clock.addSample(parsed.serverTimeMs);
-    this.updateListFromStatus(auctionId, parsed, 'fast_poll');
+    try {
+      const statusJson = await this.jdApi.call(
+        JD_FUNCTIONS.CURRENT_AND_OFFER,
+        buildStatusBody(auctionId),
+      );
+      const parsed = parseStatusResponse(statusJson, auctionId);
+      if (parsed.serverTimeMs) this.clock.addSample(parsed.serverTimeMs);
+      this.updateListFromStatus(auctionId, parsed, 'fast_poll');
+    } catch (err) {
+      this.handleApiUnavailable(err);
+    }
   }
 
   private updateListFromStatus(

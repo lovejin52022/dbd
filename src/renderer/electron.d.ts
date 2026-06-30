@@ -13,6 +13,10 @@ export interface ElectronAPI {
   updateTargetPrice: (id: string, price: number | null) => Promise<AuctionListDbRow>;
   /** 订阅列表更新事件，返回取消订阅函数 */
   onListUpdated: (callback: () => void) => () => void;
+  /** 调度器暂停事件（Webview / 登录不可用） */
+  onSchedulerPaused: (callback: (payload: { reason: string }) => void) => () => void;
+  /** 调度器恢复事件 */
+  onSchedulerResumed: (callback: () => void) => () => void;
   /** 清除多宝岛 webview session */
   clearSession: () => Promise<void>;
   /** 设置窗口置顶，返回实际状态 */

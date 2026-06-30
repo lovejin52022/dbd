@@ -21,6 +21,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('auction:list-updated', listener);
     return () => ipcRenderer.removeListener('auction:list-updated', listener);
   },
+  /** 调度器因 Webview / ParamsSign 不可用暂停时回调 */
+  onSchedulerPaused: (callback: (payload: { reason: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { reason: string }) =>
+      callback(payload);
+    ipcRenderer.on('scheduler:paused', listener);
+    return () => ipcRenderer.removeListener('scheduler:paused', listener);
+  },
+  /** 调度器恢复运行（Webview 已就绪） */
+  onSchedulerResumed: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('scheduler:resumed', listener);
+    return () => ipcRenderer.removeListener('scheduler:resumed', listener);
+  },
   /** 清除多宝岛 webview session */
   clearSession: () => ipcRenderer.invoke('session:clear') as Promise<void>,
   /** 设置窗口置顶，返回实际状态 */

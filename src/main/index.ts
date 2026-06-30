@@ -1,8 +1,9 @@
-import { app, BrowserWindow, ipcMain, Notification, type WebContents } from 'electron';
+import { app, BrowserWindow, ipcMain, type WebContents } from 'electron';
 import { join } from 'path';
 import { URLS } from '../shared/constants';
 import { getDb } from './db/connection';
 import { registerIpcHandlers } from './ipc/handlers';
+import { showNotification } from './notify';
 import { AuctionScheduler } from './scheduler/auction-scheduler';
 import { JdApiService } from './services/jd-api.service';
 
@@ -48,6 +49,11 @@ function createWindow(): BrowserWindow {
   // 保存 webview webContents，供 JdApiService 调用 ParamsSign
   win.webContents.on('did-attach-webview', (_event, webContents) => {
     jdWebContents = webContents;
+    // Webview 就绪后恢复已暂停的调度器
+    if (auctionScheduler?.isPaused()) {
+      auctionScheduler.resume();
+      mainWindow?.webContents.send('scheduler:resumed');
+    }
   });
 
   mainWindow = win;
@@ -63,10 +69,11 @@ app.whenReady().then(() => {
   auctionScheduler = new AuctionScheduler(
     db,
     jdApi,
-    (title, body) => {
-      new Notification({ title, body }).show();
-    },
+    showNotification,
     notifyAuctionListUpdated,
+    (reason) => {
+      mainWindow?.webContents.send('scheduler:paused', { reason });
+    },
   );
   registerIpcHandlers({
     db,
