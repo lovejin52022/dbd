@@ -25,7 +25,11 @@ export function migrate(db: Database.Database): void {
       order_error TEXT,
       last_polled_at TEXT,
       scheduler_phase TEXT NOT NULL DEFAULT 'idle',
-      data_incomplete INTEGER NOT NULL DEFAULT 0
+      data_incomplete INTEGER NOT NULL DEFAULT 0,
+      used_no TEXT,
+      current_bidder TEXT,
+      offer_advance_min_ms INTEGER NOT NULL DEFAULT 100,
+      offer_advance_max_ms INTEGER NOT NULL DEFAULT 200
     );
     CREATE TABLE IF NOT EXISTS auction_detail (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,4 +49,23 @@ export function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_auction_detail_auction_id ON auction_detail(auction_id);
     CREATE INDEX IF NOT EXISTS idx_bid_records_auction_id ON bid_records(auction_id);
   `);
+
+  // 兼容已有数据库：增量添加 used_no 列
+  const cols = db.prepare('PRAGMA table_info(auction_list)').all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'used_no')) {
+    db.exec('ALTER TABLE auction_list ADD COLUMN used_no TEXT');
+  }
+  if (!cols.some((c) => c.name === 'current_bidder')) {
+    db.exec('ALTER TABLE auction_list ADD COLUMN current_bidder TEXT');
+  }
+  if (!cols.some((c) => c.name === 'offer_advance_min_ms')) {
+    db.exec(
+      'ALTER TABLE auction_list ADD COLUMN offer_advance_min_ms INTEGER NOT NULL DEFAULT 100',
+    );
+  }
+  if (!cols.some((c) => c.name === 'offer_advance_max_ms')) {
+    db.exec(
+      'ALTER TABLE auction_list ADD COLUMN offer_advance_max_ms INTEGER NOT NULL DEFAULT 200',
+    );
+  }
 }

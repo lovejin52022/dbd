@@ -1,4 +1,11 @@
 import type { LifecycleStatus } from '../../shared/types';
+import {
+  calcOfferScheduleDelay,
+  DEFAULT_OFFER_ADVANCE_MAX_MS,
+  DEFAULT_OFFER_ADVANCE_MIN_MS,
+  FAST_POLL_BEFORE_END_MS,
+  pickOfferAdvanceMs,
+} from '../../shared/offer-schedule';
 import { ClockSync } from './clock-sync';
 
 /** 数据库行（snake_case） */
@@ -6,7 +13,10 @@ export interface DbAuctionRow {
   id: string;
   lifecycle_status: LifecycleStatus;
   auction_start_time: number | null;
+  auction_end_time: number | null;
   auto_order_enabled: number;
+  offer_advance_min_ms: number | null;
+  offer_advance_max_ms: number | null;
 }
 
 export interface ItemRunnerCallbacks {
@@ -21,38 +31,27 @@ export function randomFastPollDelay(): number {
   return 10 + Math.floor(Math.random() * 91);
 }
 
-/** 计算出价定时器延迟（毫秒），供 scheduleOfferPrice 与单元测试使用 */
-export function calcOfferScheduleDelay(params: {
-  auctionStartTime: number;
-  serverNowMs: number;
-  advanceMs: number;
-}): number {
-  const fireAt = params.auctionStartTime - params.advanceMs;
-  return Math.max(0, fireAt - params.serverNowMs);
-}
-
-/** 在抢购开始前 80–100ms（随机）触发出价 */
+/** 在抢购结束前 advanceMs 触发出价 */
 export function scheduleOfferPrice(params: {
-  auctionStartTime: number;
+  auctionEndTime: number;
+  advanceMinMs: number;
+  advanceMaxMs: number;
   clock: ClockSync;
   onFire: () => void;
 }): NodeJS.Timeout {
-  const advanceMs = 80 + Math.floor(Math.random() * 21);
+  const advanceMs = pickOfferAdvanceMs(params.advanceMinMs, params.advanceMaxMs);
   const delay = calcOfferScheduleDelay({
-    auctionStartTime: params.auctionStartTime,
+    auctionEndTime: params.auctionEndTime,
     serverNowMs: params.clock.serverNow(),
     advanceMs,
   });
   return setTimeout(params.onFire, delay);
 }
 
-/** 距开始 10 秒内快轮询窗口（毫秒） */
-const FAST_POLL_WINDOW_MS = 10_000;
-
 /**
  * 单条目调度状态机：
- * - not_started：零轮询，setTimeout 监视开始时间
- * - in_progress + autoOrder：开始前 10s 快轮询 + 精准出价（各仅一次）
+ * - not_started：监视开始时间；若开启自动出价则按结束时间挂出价/快轮询
+ * - in_progress + autoOrder：结束前 10s 快轮询 + 结束前 N ms 精准出价
  */
 export class ItemRunner {
   private timers = new Set<NodeJS.Timeout>();
@@ -79,16 +78,18 @@ export class ItemRunner {
   private init(): void {
     if (this.row.lifecycle_status === 'not_started') {
       this.scheduleBecomeInProgress();
-      if (this.row.auto_order_enabled) {
-        this.scheduleAutoOrderTimers();
-      }
-      return;
     }
 
-    // 应用重启后若仍在开始前 10s 窗口内，补挂快轮询与出价
-    if (this.row.lifecycle_status === 'in_progress' && this.row.auto_order_enabled) {
-      this.maybeResumeAutoOrder();
+    if (this.row.auto_order_enabled) {
+      this.scheduleAutoOrderTimers();
     }
+  }
+
+  private getAdvanceRange(): { minMs: number; maxMs: number } {
+    return {
+      minMs: this.row.offer_advance_min_ms ?? DEFAULT_OFFER_ADVANCE_MIN_MS,
+      maxMs: this.row.offer_advance_max_ms ?? DEFAULT_OFFER_ADVANCE_MAX_MS,
+    };
   }
 
   private trackTimer(timer: NodeJS.Timeout): void {
@@ -109,31 +110,31 @@ export class ItemRunner {
     this.trackTimer(timer);
   }
 
-  /** 自动出价：T-10s 进入快轮询 + T-(80~100ms) 出价 */
+  /** 自动出价：T-10s（相对结束）快轮询 + T-(min~max ms) 出价 */
   private scheduleAutoOrderTimers(): void {
-    const start = this.row.auction_start_time;
-    if (start == null) return;
+    const end = this.row.auction_end_time;
+    if (end == null) return;
 
-    const entryDelay = Math.max(0, start - FAST_POLL_WINDOW_MS - this.clock.serverNow());
-    const entryTimer = setTimeout(() => {
-      if (this.disposed || this.row.lifecycle_status === 'expired') return;
+    const serverNow = this.clock.serverNow();
+    const msToEnd = end - serverNow;
+
+    if (msToEnd <= 0) {
+      // 已过结束点但尚未标记 expired 时，不再抢出
+      return;
+    }
+
+    if (msToEnd > FAST_POLL_BEFORE_END_MS) {
+      const entryDelay = Math.max(0, end - FAST_POLL_BEFORE_END_MS - serverNow);
+      const entryTimer = setTimeout(() => {
+        if (this.disposed || this.row.lifecycle_status === 'expired') return;
+        this.startFastPollLoop();
+      }, entryDelay);
+      this.trackTimer(entryTimer);
+    } else {
       this.startFastPollLoop();
-    }, entryDelay);
-    this.trackTimer(entryTimer);
+    }
 
     this.scheduleOfferOnce();
-  }
-
-  /** 重启后距开始仍 ≤10s 时恢复快轮询/出价 */
-  private maybeResumeAutoOrder(): void {
-    const start = this.row.auction_start_time;
-    if (start == null) return;
-
-    const msToStart = start - this.clock.serverNow();
-    if (msToStart > 0 && msToStart <= FAST_POLL_WINDOW_MS) {
-      this.startFastPollLoop();
-      this.scheduleOfferOnce();
-    }
   }
 
   /** 每条目仅调度一次 offerPrice */
@@ -141,11 +142,14 @@ export class ItemRunner {
     if (this.offerScheduled) return;
     this.offerScheduled = true;
 
-    const start = this.row.auction_start_time;
-    if (start == null) return;
+    const end = this.row.auction_end_time;
+    if (end == null) return;
 
+    const { minMs, maxMs } = this.getAdvanceRange();
     const timer = scheduleOfferPrice({
-      auctionStartTime: start,
+      auctionEndTime: end,
+      advanceMinMs: minMs,
+      advanceMaxMs: maxMs,
       clock: this.clock,
       onFire: () => {
         if (this.disposed) return;
@@ -155,7 +159,7 @@ export class ItemRunner {
     this.trackTimer(timer);
   }
 
-  /** 10–100ms 随机间隔快轮询，直到抢购开始 */
+  /** 10–100ms 随机间隔快轮询，直到抢购结束 */
   private startFastPollLoop(): void {
     if (this.fastPollActive || this.disposed) return;
     this.fastPollActive = true;
@@ -166,8 +170,8 @@ export class ItemRunner {
         return;
       }
 
-      const start = this.row.auction_start_time;
-      if (start == null || this.clock.serverNow() >= start) {
+      const end = this.row.auction_end_time;
+      if (end == null || this.clock.serverNow() >= end) {
         this.fastPollActive = false;
         return;
       }
@@ -180,3 +184,6 @@ export class ItemRunner {
     poll();
   }
 }
+
+// 供单元测试引用
+export { calcOfferScheduleDelay, pickOfferAdvanceMs };

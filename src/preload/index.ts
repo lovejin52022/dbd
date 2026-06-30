@@ -15,6 +15,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('auction:set-auto-order', id, enabled),
   updateTargetPrice: (id: string, price: number | null) =>
     ipcRenderer.invoke('auction:update-target-price', id, price),
+  updateOfferAdvance: (id: string, minMs: number, maxMs: number) =>
+    ipcRenderer.invoke('auction:update-offer-advance', id, minMs, maxMs),
+  /** 获取商品抢购历史 */
+  getAuctionHistory: (auctionId: string) =>
+    ipcRenderer.invoke('auction:get-history', auctionId) as Promise<
+      Array<{
+        userNickname: string;
+        endTime: number;
+        userImage: string | null;
+        offerPrice: number;
+      }>
+    >,
+  /** 获取出价记录 */
+  getBidRecords: (auctionId: string, refresh?: boolean) =>
+    ipcRenderer.invoke('auction:get-bid-records', auctionId, refresh) as Promise<{
+      fetchedAt: string | null;
+      records: Array<{
+        userNickname: string;
+        offerPrice: number;
+        bidTimeMs: number | null;
+        userImage: string | null;
+      }>;
+    }>,
   /** 主进程列表更新时回调（返回取消订阅函数） */
   onListUpdated: (callback: () => void) => {
     const listener = () => callback();
@@ -41,4 +64,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('window:set-always-on-top', value) as Promise<boolean>,
   /** 获取窗口是否置顶 */
   getAlwaysOnTop: () => ipcRenderer.invoke('window:get-always-on-top') as Promise<boolean>,
+  /** 切换应用壳 DevTools */
+  toggleAppDevTools: () => ipcRenderer.invoke('devtools:toggle-app') as Promise<boolean>,
 });

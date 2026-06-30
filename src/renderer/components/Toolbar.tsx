@@ -16,6 +16,8 @@ interface Props {
   onRefresh: () => void;
   /** webview 后退 */
   onGoBack: () => void;
+  /** 切换网页 DevTools */
+  onToggleWebviewDevTools?: () => void;
 }
 
 /** 顶部工具栏：导航、session 管理、窗口置顶、登录检测 */
@@ -27,7 +29,9 @@ export default function Toolbar({
   onNavigateHome,
   onRefresh,
   onGoBack,
+  onToggleWebviewDevTools,
 }: Props) {
+  const isDev = import.meta.env.DEV;
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const needsLogin = currentUrl.startsWith(URLS.LOGIN_PREFIX);
 
@@ -111,6 +115,21 @@ export default function Toolbar({
       </button>
 
       <span style={{ flex: 1 }} />
+
+      {isDev && (
+        <>
+          <button
+            type="button"
+            style={btnStyle}
+            onClick={() => void window.electronAPI.toggleAppDevTools()}
+          >
+            应用 DevTools
+          </button>
+          <button type="button" style={btnStyle} onClick={onToggleWebviewDevTools}>
+            网页 DevTools
+          </button>
+        </>
+      )}
 
       <button type="button" disabled={!isDetailPage} onClick={onAddToList}>
         加入抢单列表

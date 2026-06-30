@@ -10,8 +10,16 @@ import { JdApiService } from './services/jd-api.service';
 /** 多宝岛 webview 的 webContents（did-attach-webview 后赋值） */
 let jdWebContents: WebContents | null = null;
 
-/** 拍卖调度器实例（窗口创建后启动） */
+/** 拍卖调度器实例（Webview 挂载后启动） */
 let auctionScheduler: AuctionScheduler | null = null;
+let schedulerStarted = false;
+
+/** Webview 就绪后启动调度器（避免 jdWebContents 为空导致整表暂停） */
+function startSchedulerIfReady(): void {
+  if (schedulerStarted || !auctionScheduler || !jdWebContents) return;
+  schedulerStarted = true;
+  auctionScheduler.start();
+}
 
 /** 主窗口引用，用于向渲染进程推送列表更新 */
 let mainWindow: BrowserWindow | null = null;
@@ -42,6 +50,9 @@ function createWindow(): BrowserWindow {
   });
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL);
+    // 不自动打开 DevTools，避免终端刷屏：
+    // language-mismatch / Autofill.enable 等为 Chromium DevTools 内部噪音
+    // 需要调试时用工具栏「应用 DevTools」手动打开
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'));
   }
@@ -49,10 +60,13 @@ function createWindow(): BrowserWindow {
   // 保存 webview webContents，供 JdApiService 调用 ParamsSign
   win.webContents.on('did-attach-webview', (_event, webContents) => {
     jdWebContents = webContents;
-    // Webview 就绪后恢复已暂停的调度器
-    if (auctionScheduler?.isPaused()) {
+    if (!auctionScheduler) return;
+    if (auctionScheduler.isPaused()) {
       auctionScheduler.resume();
+      schedulerStarted = true;
       mainWindow?.webContents.send('scheduler:resumed');
+    } else {
+      startSchedulerIfReady();
     }
   });
 
@@ -81,7 +95,8 @@ app.whenReady().then(() => {
     scheduler: auctionScheduler,
     notifyListUpdated: notifyAuctionListUpdated,
   });
-  auctionScheduler.start();
+  // 调度器在 did-attach-webview 后启动；若 webview 已存在则立即启动
+  startSchedulerIfReady();
 
   // 向渲染进程提供默认多宝岛 URL
   ipcMain.handle('app:get-default-url', () => URLS.MINE);
@@ -105,6 +120,14 @@ app.whenReady().then(() => {
   ipcMain.handle('window:get-always-on-top', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     return win?.isAlwaysOnTop() ?? false;
+  });
+
+  // 切换应用壳 DevTools（开发调试用）
+  ipcMain.handle('devtools:toggle-app', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return false;
+    win.webContents.toggleDevTools();
+    return win.webContents.isDevToolsOpened();
   });
 });
 

@@ -8,6 +8,9 @@ export const URLS = {
 /** 多宝岛「我的页面」默认 URL（兼容旧引用） */
 export const DEFAULT_MINE_URL = URLS.MINE;
 
+/** 内嵌网页默认宽度（px），可通过拖拽分隔条调整 */
+export const DEFAULT_WEBVIEW_WIDTH = 390;
+
 /** 京东 API functionId 常量 */
 export const JD_FUNCTIONS = {
   DETAIL_V2: 'dbd.auction.detail.v2',
@@ -15,6 +18,7 @@ export const JD_FUNCTIONS = {
   BID_RECORDS: 'paipai.auction.bidrecords',
   CURRENT_AND_OFFER: 'paipai.auction.get_current_and_offerNum',
   OFFER_PRICE: 'paipai.auction.offerPrice',
+  AUCTION_HISTORY: 'dbd.auction.detail.history',
 } as const;
 
 const DBD_API_VERSION = '20250109';
@@ -36,6 +40,11 @@ export function buildDetailV2Body(auctionId: string, area = '') {
 /** 销售信息请求体 */
 export function buildSaleInfoBody(auctionId: string) {
   return { auctionId, mpSource: 1, sourceTag: 2 };
+}
+
+/** 抢购历史请求体（usedNo 来自 detail.v2） */
+export function buildAuctionHistoryBody(usedNo: string) {
+  return { usedNo, mpSource: 1, sourceTag: 2 };
 }
 
 /** 出价记录请求体 */

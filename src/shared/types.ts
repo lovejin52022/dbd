@@ -25,4 +25,13 @@ export interface AuctionListRow {
   lastPolledAt: string | null;
   schedulerPhase: SchedulerPhase;
   dataIncomplete: number;
+  usedNo: string | null;
+}
+
+/** 单条抢购历史记录 */
+export interface AuctionHistoryItem {
+  userNickname: string;
+  endTime: number;
+  userImage: string | null;
+  offerPrice: number;
 }

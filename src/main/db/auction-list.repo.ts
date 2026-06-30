@@ -21,6 +21,7 @@ export function upsertAuctionList(
         auction_start_time = COALESCE(@auctionStartTime, auction_start_time),
         auction_end_time = COALESCE(@auctionEndTime, auction_end_time),
         address = COALESCE(@address, address),
+        used_no = COALESCE(@usedNo, used_no),
         data_incomplete = COALESCE(@dataIncomplete, data_incomplete)
       WHERE id = @id
     `).run({
@@ -35,6 +36,7 @@ export function upsertAuctionList(
       auctionStartTime: row.auctionStartTime ?? null,
       auctionEndTime: row.auctionEndTime ?? null,
       address: row.address ?? null,
+      usedNo: row.usedNo ?? null,
       dataIncomplete: row.dataIncomplete ?? null,
     });
   } else {
