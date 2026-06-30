@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { URLS } from '../shared/constants';
 import Sidebar from './components/Sidebar';
 import Toolbar from './components/Toolbar';
 
@@ -54,6 +55,23 @@ export default function App() {
     if (webview) webview.src = url;
   }, []);
 
+  const handleNavigateMine = useCallback(() => {
+    handleOpenUrl(URLS.MINE);
+  }, [handleOpenUrl]);
+
+  const handleNavigateHome = useCallback(() => {
+    handleOpenUrl(URLS.HOME);
+  }, [handleOpenUrl]);
+
+  const handleRefresh = useCallback(() => {
+    webviewRef.current?.reload();
+  }, []);
+
+  const handleGoBack = useCallback(() => {
+    const webview = webviewRef.current;
+    if (webview?.canGoBack()) webview.goBack();
+  }, []);
+
   const handleAddToList = useCallback(async () => {
     const webview = webviewRef.current;
     const info = parseDetailUrl(currentUrl);
@@ -70,7 +88,15 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <Toolbar isDetailPage={isDetailPageUrl(currentUrl)} onAddToList={() => void handleAddToList()} />
+      <Toolbar
+        currentUrl={currentUrl}
+        isDetailPage={isDetailPageUrl(currentUrl)}
+        onAddToList={() => void handleAddToList()}
+        onNavigateMine={handleNavigateMine}
+        onNavigateHome={handleNavigateHome}
+        onRefresh={handleRefresh}
+        onGoBack={handleGoBack}
+      />
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         {defaultUrl && (
           <webview ref={webviewRef} src={defaultUrl} style={{ flex: 1 }} />

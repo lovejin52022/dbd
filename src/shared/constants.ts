@@ -1,6 +1,12 @@
-/** 多宝岛「我的页面」默认 URL */
-export const DEFAULT_MINE_URL =
-  'https://dbd.m.jd.com/ppdbd/pages/mine/index?scene=null';
+/** 导航 URL 常量 */
+export const URLS = {
+  MINE: 'https://dbd.m.jd.com/ppdbd/pages/mine/index?scene=null',
+  HOME: 'https://dbd.m.jd.com/ppdbd/paimai',
+  LOGIN_PREFIX: 'https://plogin.m.jd.com/login/login',
+} as const;
+
+/** 多宝岛「我的页面」默认 URL（兼容旧引用） */
+export const DEFAULT_MINE_URL = URLS.MINE;
 
 /** 京东 API functionId 常量 */
 export const JD_FUNCTIONS = {

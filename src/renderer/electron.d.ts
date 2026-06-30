@@ -13,6 +13,12 @@ export interface ElectronAPI {
   updateTargetPrice: (id: string, price: number | null) => Promise<AuctionListDbRow>;
   /** 订阅列表更新事件，返回取消订阅函数 */
   onListUpdated: (callback: () => void) => () => void;
+  /** 清除多宝岛 webview session */
+  clearSession: () => Promise<void>;
+  /** 设置窗口置顶，返回实际状态 */
+  setAlwaysOnTop: (value: boolean) => Promise<boolean>;
+  /** 获取窗口是否置顶 */
+  getAlwaysOnTop: () => Promise<boolean>;
 }
 
 /** IPC 返回的数据库行（SQLite snake_case） */

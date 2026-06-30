@@ -1,13 +1,10 @@
 import { app, BrowserWindow, ipcMain, Notification, type WebContents } from 'electron';
 import { join } from 'path';
+import { URLS } from '../shared/constants';
 import { getDb } from './db/connection';
 import { registerIpcHandlers } from './ipc/handlers';
 import { AuctionScheduler } from './scheduler/auction-scheduler';
 import { JdApiService } from './services/jd-api.service';
-
-/** 多宝岛「我的页面」默认 URL */
-const DEFAULT_MINE_URL =
-  'https://dbd.m.jd.com/ppdbd/pages/mine/index?scene=null';
 
 /** 多宝岛 webview 的 webContents（did-attach-webview 后赋值） */
 let jdWebContents: WebContents | null = null;
@@ -80,7 +77,28 @@ app.whenReady().then(() => {
   auctionScheduler.start();
 
   // 向渲染进程提供默认多宝岛 URL
-  ipcMain.handle('app:get-default-url', () => DEFAULT_MINE_URL);
+  ipcMain.handle('app:get-default-url', () => URLS.MINE);
+
+  // 清除多宝岛 webview session（cookie / 本地存储）
+  ipcMain.handle('session:clear', async () => {
+    const wc = jdWebContents;
+    if (!wc) return;
+    const ses = wc.session;
+    await ses.clearStorageData();
+    await ses.clearCache();
+  });
+
+  // 窗口置顶切换
+  ipcMain.handle('window:set-always-on-top', (event, value: boolean) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    win?.setAlwaysOnTop(value);
+    return win?.isAlwaysOnTop() ?? false;
+  });
+
+  ipcMain.handle('window:get-always-on-top', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return win?.isAlwaysOnTop() ?? false;
+  });
 });
 
 app.on('window-all-closed', () => {
