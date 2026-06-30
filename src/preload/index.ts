@@ -15,4 +15,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('auction:set-auto-order', id, enabled),
   updateTargetPrice: (id: string, price: number | null) =>
     ipcRenderer.invoke('auction:update-target-price', id, price),
+  /** 主进程列表更新时回调（返回取消订阅函数） */
+  onListUpdated: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('auction:list-updated', listener);
+    return () => ipcRenderer.removeListener('auction:list-updated', listener);
+  },
 });

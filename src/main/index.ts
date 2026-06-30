@@ -15,6 +15,14 @@ let jdWebContents: WebContents | null = null;
 /** 拍卖调度器实例（窗口创建后启动） */
 let auctionScheduler: AuctionScheduler | null = null;
 
+/** 主窗口引用，用于向渲染进程推送列表更新 */
+let mainWindow: BrowserWindow | null = null;
+
+/** 通知渲染进程刷新抢单列表 */
+function notifyAuctionListUpdated(): void {
+  mainWindow?.webContents.send('auction:list-updated');
+}
+
 /** 供 Task 8 调度器使用的共享依赖 */
 export function getAppServices() {
   return {
@@ -45,6 +53,7 @@ function createWindow(): BrowserWindow {
     jdWebContents = webContents;
   });
 
+  mainWindow = win;
   return win;
 }
 
@@ -54,10 +63,20 @@ app.whenReady().then(() => {
 
   createWindow();
 
-  auctionScheduler = new AuctionScheduler(db, jdApi, (title, body) => {
-    new Notification({ title, body }).show();
+  auctionScheduler = new AuctionScheduler(
+    db,
+    jdApi,
+    (title, body) => {
+      new Notification({ title, body }).show();
+    },
+    notifyAuctionListUpdated,
+  );
+  registerIpcHandlers({
+    db,
+    jdApi,
+    scheduler: auctionScheduler,
+    notifyListUpdated: notifyAuctionListUpdated,
   });
-  registerIpcHandlers({ db, jdApi, scheduler: auctionScheduler });
   auctionScheduler.start();
 
   // 向渲染进程提供默认多宝岛 URL

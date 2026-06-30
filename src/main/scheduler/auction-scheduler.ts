@@ -27,6 +27,7 @@ export class AuctionScheduler {
     private db: Database.Database,
     private jdApi: JdApiService,
     private notify: (title: string, body: string) => void,
+    private onListUpdated?: () => void,
   ) {}
 
   start(): void {
@@ -112,6 +113,7 @@ export class AuctionScheduler {
       this.updateListFromStatus(id, parsed, 'slow_poll');
       this.maybeExpire(id, parsed);
     }
+    this.onListUpdated?.();
   }
 
   /** 过期时拉一次 bidrecords 并标记终态 */

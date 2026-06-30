@@ -10,11 +10,13 @@ export function registerIpcHandlers(deps: {
   db: Database.Database;
   jdApi: JdApiService;
   scheduler: AuctionScheduler;
+  notifyListUpdated: () => void;
 }): void {
   ipcMain.handle('auction:add', async (_e, payload: {
     id: string; skuid: string | null; url: string; title: string;
   }) => {
     await ingestAuctionFromUrl(deps.db, deps.jdApi, payload);
+    deps.notifyListUpdated();
     return deps.db.prepare('SELECT * FROM auction_list WHERE id = ?').get(payload.id);
   });
 

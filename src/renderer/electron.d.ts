@@ -9,6 +9,10 @@ export interface ElectronAPI {
   }) => Promise<AuctionListDbRow>;
   listAuctions: () => Promise<AuctionListDbRow[]>;
   deleteAuction: (id: string) => Promise<void>;
+  setAutoOrder: (id: string, enabled: boolean) => Promise<AuctionListDbRow>;
+  updateTargetPrice: (id: string, price: number | null) => Promise<AuctionListDbRow>;
+  /** 订阅列表更新事件，返回取消订阅函数 */
+  onListUpdated: (callback: () => void) => () => void;
 }
 
 /** IPC 返回的数据库行（SQLite snake_case） */
