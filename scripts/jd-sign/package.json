@@ -1,0 +1,7 @@
+{
+  "name": "duobaodao-jd-sign",
+  "version": "1.0.0",
+  "private": true,
+  "description": "京东多宝岛 current_bid_info — Electron Webview 调用",
+  "main": "index.js"
+}
