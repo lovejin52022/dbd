@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain, type WebContents } from 'electron';
+import { app, BrowserWindow, ipcMain, Notification, type WebContents } from 'electron';
 import { join } from 'path';
 import { getDb } from './db/connection';
 import { registerIpcHandlers } from './ipc/handlers';
+import { AuctionScheduler } from './scheduler/auction-scheduler';
 import { JdApiService } from './services/jd-api.service';
 
 /** 多宝岛「我的页面」默认 URL */
@@ -10,6 +11,9 @@ const DEFAULT_MINE_URL =
 
 /** 多宝岛 webview 的 webContents（did-attach-webview 后赋值） */
 let jdWebContents: WebContents | null = null;
+
+/** 拍卖调度器实例（窗口创建后启动） */
+let auctionScheduler: AuctionScheduler | null = null;
 
 /** 供 Task 8 调度器使用的共享依赖 */
 export function getAppServices() {
@@ -49,7 +53,12 @@ app.whenReady().then(() => {
   const jdApi = new JdApiService(() => jdWebContents);
 
   createWindow();
-  registerIpcHandlers({ db, jdApi });
+
+  auctionScheduler = new AuctionScheduler(db, jdApi, (title, body) => {
+    new Notification({ title, body }).show();
+  });
+  registerIpcHandlers({ db, jdApi, scheduler: auctionScheduler });
+  auctionScheduler.start();
 
   // 向渲染进程提供默认多宝岛 URL
   ipcMain.handle('app:get-default-url', () => DEFAULT_MINE_URL);

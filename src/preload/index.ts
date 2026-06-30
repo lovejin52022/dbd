@@ -11,4 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }) => ipcRenderer.invoke('auction:add', payload),
   listAuctions: () => ipcRenderer.invoke('auction:list'),
   deleteAuction: (id: string) => ipcRenderer.invoke('auction:delete', id),
+  setAutoOrder: (id: string, enabled: boolean) =>
+    ipcRenderer.invoke('auction:set-auto-order', id, enabled),
+  updateTargetPrice: (id: string, price: number | null) =>
+    ipcRenderer.invoke('auction:update-target-price', id, price),
 });
