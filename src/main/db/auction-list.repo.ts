@@ -65,6 +65,14 @@ export function listByLifecycle(db: Database.Database, status: LifecycleStatus):
   `).all(status) as AuctionListRow[];
 }
 
+/** 未过期且数据完整、需要定时同步抢购状态的条目 */
+export function listActiveForStatusPoll(db: Database.Database): AuctionListRow[] {
+  return db.prepare(`
+    SELECT * FROM auction_list
+    WHERE lifecycle_status != 'expired' AND data_incomplete = 0
+  `).all() as AuctionListRow[];
+}
+
 /** 删除抢单条目，关联快照由外键级联删除 */
 export function deleteAuction(db: Database.Database, id: string): void {
   db.prepare('DELETE FROM auction_list WHERE id = ?').run(id);

@@ -1,19 +1,35 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { ClockSync } from '../src/main/scheduler/clock-sync';
+import { ClockSync, DEFAULT_ESTIMATED_RTT_MS } from '../src/main/scheduler/clock-sync';
 import { scheduleOfferPrice } from '../src/main/scheduler/item-runner';
 import {
+  calcOfferFireAt,
   calcOfferScheduleDelay,
   pickOfferAdvanceMs,
 } from '../src/shared/offer-schedule';
 
 describe('calcOfferScheduleDelay', () => {
-  it('fireAt = endTime - advanceMs，delay = max(0, fireAt - serverNow)', () => {
+  it('fireAt = endTime - advanceMs - offerRtt，delay = max(0, fireAt - serverNow)', () => {
     const endTime = 1_000_000;
     const serverNow = 999_850;
     const advanceMs = 90;
-    // fireAt = 999910, delay = 60
+    // fireAt = 999910 - 80 = 999830, delay = 0（serverNow 已超过 fireAt）
     expect(
-      calcOfferScheduleDelay({ auctionEndTime: endTime, serverNowMs: serverNow, advanceMs }),
+      calcOfferScheduleDelay({
+        auctionEndTime: endTime,
+        serverNowMs: serverNow,
+        advanceMs,
+        estimatedOfferRttMs: 80,
+      }),
+    ).toBe(0);
+  });
+
+  it('无 RTT 补偿时 delay 按 advanceMs 计算', () => {
+    expect(
+      calcOfferScheduleDelay({
+        auctionEndTime: 1_000_000,
+        serverNowMs: 999_850,
+        advanceMs: 90,
+      }),
     ).toBe(60);
   });
 
@@ -35,17 +51,17 @@ describe('pickOfferAdvanceMs', () => {
 
   it('在 [min,max] 范围内', () => {
     for (let i = 0; i < 20; i++) {
-      const v = pickOfferAdvanceMs(100, 200);
-      expect(v).toBeGreaterThanOrEqual(100);
-      expect(v).toBeLessThanOrEqual(200);
+      const v = pickOfferAdvanceMs(150, 250);
+      expect(v).toBeGreaterThanOrEqual(150);
+      expect(v).toBeLessThanOrEqual(250);
     }
   });
 });
 
 describe('scheduleOfferPrice', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.spyOn(Math, 'random').mockReturnValue(0); // advanceMs = min = 100
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(Math, 'random').mockReturnValue(0); // advanceMs = min = 150
   });
 
   afterEach(() => {
@@ -53,7 +69,7 @@ describe('scheduleOfferPrice', () => {
     vi.restoreAllMocks();
   });
 
-  it('按校准后服务器时间在结束前 advanceMs 触发', () => {
+  it('按 fireAt 触发（含 RTT 补偿 + 末段细粒度对齐）', () => {
     const clock = new ClockSync();
     vi.setSystemTime(1000);
     clock.addSample(1050);
@@ -63,23 +79,25 @@ describe('scheduleOfferPrice', () => {
 
     scheduleOfferPrice({
       auctionEndTime: endTime,
-      advanceMinMs: 100,
-      advanceMaxMs: 200,
+      advanceMinMs: 150,
+      advanceMaxMs: 250,
       clock,
       onFire,
     });
 
-    const expectedDelay = calcOfferScheduleDelay({
+    const fireAt = calcOfferFireAt({
       auctionEndTime: endTime,
-      serverNowMs: clock.serverNow(),
-      advanceMs: 100,
+      advanceMs: 150,
+      estimatedOfferRttMs: DEFAULT_ESTIMATED_RTT_MS,
     });
-    expect(expectedDelay).toBe(3850);
+    expect(fireAt).toBe(5000 - 150 - DEFAULT_ESTIMATED_RTT_MS);
 
-    vi.advanceTimersByTime(expectedDelay - 1);
+    const coarseDelay = Math.max(0, fireAt - clock.serverNow() - 20);
+    vi.advanceTimersByTime(coarseDelay - 1);
     expect(onFire).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(1);
+    // 末段细粒度等待（最多 10ms 步进）
+    vi.advanceTimersByTime(50);
     expect(onFire).toHaveBeenCalledOnce();
   });
 });

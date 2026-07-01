@@ -28,8 +28,8 @@ export function migrate(db: Database.Database): void {
       data_incomplete INTEGER NOT NULL DEFAULT 0,
       used_no TEXT,
       current_bidder TEXT,
-      offer_advance_min_ms INTEGER NOT NULL DEFAULT 100,
-      offer_advance_max_ms INTEGER NOT NULL DEFAULT 200
+      offer_advance_min_ms INTEGER NOT NULL DEFAULT 150,
+      offer_advance_max_ms INTEGER NOT NULL DEFAULT 250
     );
     CREATE TABLE IF NOT EXISTS auction_detail (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,12 +60,12 @@ export function migrate(db: Database.Database): void {
   }
   if (!cols.some((c) => c.name === 'offer_advance_min_ms')) {
     db.exec(
-      'ALTER TABLE auction_list ADD COLUMN offer_advance_min_ms INTEGER NOT NULL DEFAULT 100',
+      'ALTER TABLE auction_list ADD COLUMN offer_advance_min_ms INTEGER NOT NULL DEFAULT 150',
     );
   }
   if (!cols.some((c) => c.name === 'offer_advance_max_ms')) {
     db.exec(
-      'ALTER TABLE auction_list ADD COLUMN offer_advance_max_ms INTEGER NOT NULL DEFAULT 200',
+      'ALTER TABLE auction_list ADD COLUMN offer_advance_max_ms INTEGER NOT NULL DEFAULT 250',
     );
   }
 }

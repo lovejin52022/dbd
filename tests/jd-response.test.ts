@@ -17,6 +17,25 @@ describe('jd-response', () => {
       result: { code: 500, message: '出价过低' },
     });
     expect(parsed.success).toBe(false);
-    expect(parsed.message).toBe('出价过低');
+    expect(parsed.message).toBe('出价过低 (code=500)');
+  });
+
+  it('解析 offerPrice 无文案时附带 code', () => {
+    const parsed = parseOfferPriceResponse({
+      code: 0,
+      result: { code: 501 },
+    });
+    expect(parsed.success).toBe(false);
+    expect(parsed.message).toBe('出价失败 (code=501)');
+  });
+
+  it('解析 offerPrice 兼容 errMsg 与 success=false', () => {
+    const parsed = parseOfferPriceResponse({
+      success: false,
+      errMsg: '拍卖已结束',
+      code: 3,
+    });
+    expect(parsed.success).toBe(false);
+    expect(parsed.message).toBe('拍卖已结束 (code=3)');
   });
 });

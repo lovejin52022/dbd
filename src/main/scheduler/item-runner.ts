@@ -1,6 +1,6 @@
 import type { LifecycleStatus } from '../../shared/types';
 import {
-  calcOfferScheduleDelay,
+  calcOfferFireAt,
   DEFAULT_OFFER_ADVANCE_MAX_MS,
   DEFAULT_OFFER_ADVANCE_MIN_MS,
   FAST_POLL_BEFORE_END_MS,
@@ -31,21 +31,52 @@ export function randomFastPollDelay(): number {
   return 10 + Math.floor(Math.random() * 91);
 }
 
-/** 在抢购结束前 advanceMs 触发出价 */
+/** 临近 fireAt 时的细粒度等待间隔（毫秒） */
+const FINE_WAIT_MS = 10;
+
+/** 进入细粒度等待前的提前量（毫秒） */
+const FINE_WAIT_LEAD_MS = 20;
+
+/**
+ * 按校准后服务器时间调度出价：粗 setTimeout + 末段细粒度对齐 fireAt。
+ * 快轮询已持续更新现价，触发时不再额外 poll。
+ */
 export function scheduleOfferPrice(params: {
   auctionEndTime: number;
   advanceMinMs: number;
   advanceMaxMs: number;
   clock: ClockSync;
   onFire: () => void;
-}): NodeJS.Timeout {
+  trackTimer?: (timer: NodeJS.Timeout) => void;
+}): void {
   const advanceMs = pickOfferAdvanceMs(params.advanceMinMs, params.advanceMaxMs);
-  const delay = calcOfferScheduleDelay({
+  const fireAt = calcOfferFireAt({
     auctionEndTime: params.auctionEndTime,
-    serverNowMs: params.clock.serverNow(),
     advanceMs,
+    estimatedOfferRttMs: params.clock.getEstimatedRttMs(),
   });
-  return setTimeout(params.onFire, delay);
+
+  const track = (timer: NodeJS.Timeout): void => {
+    params.trackTimer?.(timer);
+  };
+
+  const tryFire = (): void => {
+    const remaining = fireAt - params.clock.serverNow();
+    if (remaining > 1) {
+      track(setTimeout(tryFire, Math.min(remaining, FINE_WAIT_MS)));
+      return;
+    }
+    params.onFire();
+  };
+
+  const initialRemaining = fireAt - params.clock.serverNow();
+  if (initialRemaining <= 0) {
+    tryFire();
+    return;
+  }
+
+  const coarseDelay = Math.max(0, initialRemaining - FINE_WAIT_LEAD_MS);
+  track(setTimeout(tryFire, coarseDelay));
 }
 
 /**
@@ -146,17 +177,17 @@ export class ItemRunner {
     if (end == null) return;
 
     const { minMs, maxMs } = this.getAdvanceRange();
-    const timer = scheduleOfferPrice({
+    scheduleOfferPrice({
       auctionEndTime: end,
       advanceMinMs: minMs,
       advanceMaxMs: maxMs,
       clock: this.clock,
+      trackTimer: (timer) => this.trackTimer(timer),
       onFire: () => {
         if (this.disposed) return;
         this.callbacks.onOfferPrice(this.row.id);
       },
     });
-    this.trackTimer(timer);
   }
 
   /** 10–100ms 随机间隔快轮询，直到抢购结束 */
@@ -186,4 +217,4 @@ export class ItemRunner {
 }
 
 // 供单元测试引用
-export { calcOfferScheduleDelay, pickOfferAdvanceMs };
+export { pickOfferAdvanceMs };

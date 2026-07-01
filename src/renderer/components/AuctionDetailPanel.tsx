@@ -39,8 +39,8 @@ export default function AuctionDetailPanel({
 }: Props) {
   const [now, setNow] = useState(Date.now());
   const [targetPrice, setTargetPrice] = useState('');
-  const [offerAdvanceMin, setOfferAdvanceMin] = useState('100');
-  const [offerAdvanceMax, setOfferAdvanceMax] = useState('200');
+  const [offerAdvanceMin, setOfferAdvanceMin] = useState('150');
+  const [offerAdvanceMax, setOfferAdvanceMax] = useState('250');
   const [history, setHistory] = useState<AuctionHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -59,8 +59,8 @@ export default function AuctionDetailPanel({
   }, [item?.id, item?.target_price]);
 
   useEffect(() => {
-    setOfferAdvanceMin(String(item?.offer_advance_min_ms ?? 100));
-    setOfferAdvanceMax(String(item?.offer_advance_max_ms ?? 200));
+    setOfferAdvanceMin(String(item?.offer_advance_min_ms ?? 150));
+    setOfferAdvanceMax(String(item?.offer_advance_max_ms ?? 250));
   }, [item?.id, item?.offer_advance_min_ms, item?.offer_advance_max_ms]);
 
   useEffect(() => {
@@ -145,8 +145,8 @@ export default function AuctionDetailPanel({
     { ok: item.data_incomplete === 0, label: '数据完整' },
     { ok: item.order_result === 'pending', label: '尚未出价' },
   ];
-  const advanceMin = Number(offerAdvanceMin) || 100;
-  const advanceMax = Number(offerAdvanceMax) || 200;
+  const advanceMin = Number(offerAdvanceMin) || 150;
+  const advanceMax = Number(offerAdvanceMax) || 250;
   const autoOrderReady = autoOrderChecks.every((c) => c.ok);
   let autoOrderHint = '请先勾选自动出价（默认关闭）';
   if (item.auto_order_enabled === 1) {
@@ -221,12 +221,6 @@ export default function AuctionDetailPanel({
                 <div className="detail-panel__label">出价人数</div>
                 <div>{item.bid_count ?? 0}</div>
               </div>
-              {item.current_bidder && (
-                <div className="detail-panel__cell detail-panel__cell--full">
-                  <div className="detail-panel__label">当前领先</div>
-                  <div>{item.current_bidder}</div>
-                </div>
-              )}
               {detail?.startPrice != null && (
                 <div className="detail-panel__cell">
                   <div className="detail-panel__label">起拍价</div>
@@ -235,21 +229,21 @@ export default function AuctionDetailPanel({
               )}
               <div className="detail-panel__cell">
                 <div className="detail-panel__label">下单状态</div>
-                <div>
+                <div
+                  className={
+                    item.order_result === 'failed' ? 'detail-panel__error-inline' : undefined
+                  }
+                >
                   {item.order_result === 'success'
                     ? '成功'
                     : item.order_result === 'failed'
-                      ? '失败'
+                      ? (item.order_error ?? '失败')
                       : item.order_result === 'skipped'
                         ? '跳过'
                         : '待触发'}
                 </div>
               </div>
             </div>
-
-            {item.order_error && (
-              <div className="detail-panel__error-inline">{item.order_error}</div>
-            )}
 
             <div className="detail-panel__block">
               <div>开始 {formatDateTime(startMs)}</div>

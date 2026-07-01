@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createTestDb } from '../../src/main/db/connection';
-import { listByLifecycle, upsertAuctionList } from '../../src/main/db/auction-list.repo';
+import { listActiveForStatusPoll, listByLifecycle, upsertAuctionList } from '../../src/main/db/auction-list.repo';
 import { AuctionScheduler } from '../../src/main/scheduler/auction-scheduler';
 import { resolveLifecycleStatus } from '../../src/shared/lifecycle';
 import type { JdApiService } from '../../src/main/services/jd-api.service';
@@ -12,6 +12,19 @@ function createMockJdApi(): JdApiService {
 }
 
 describe('慢轮询查询过滤', () => {
+  it('not_started 与 in_progress 均纳入定时状态同步', () => {
+    const db = createTestDb();
+    upsertAuctionList(db, { id: 'ns-1', url: 'https://example.com/a', lifecycleStatus: 'not_started' });
+    upsertAuctionList(db, { id: 'ip-1', url: 'https://example.com/b', lifecycleStatus: 'in_progress' });
+    upsertAuctionList(db, { id: 'ex-1', url: 'https://example.com/c', lifecycleStatus: 'expired' });
+    db.prepare('UPDATE auction_list SET data_incomplete = 0').run();
+
+    const pollIds = listActiveForStatusPoll(db).map((r) => r.id);
+
+    expect(pollIds).toEqual(expect.arrayContaining(['ns-1', 'ip-1']));
+    expect(pollIds).not.toContain('ex-1');
+  });
+
   it('not_started 条目不在 listByLifecycle(in_progress) 结果中', () => {
     const db = createTestDb();
     upsertAuctionList(db, { id: 'ns-1', url: 'https://example.com/a', lifecycleStatus: 'not_started' });

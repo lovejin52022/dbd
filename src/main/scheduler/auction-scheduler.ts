@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { listByLifecycle } from '../db/auction-list.repo';
+import { listActiveForStatusPoll } from '../db/auction-list.repo';
 import { getLatestDetailSnapshot } from '../db/auction-detail.repo';
 import { insertBidRecordsSnapshot } from '../db/bid-records.repo';
 import {
@@ -86,6 +86,17 @@ export class AuctionScheduler {
     return true;
   }
 
+  /** 记录出价失败并通知用户 */
+  private markOfferFailed(auctionId: string, msg: string): void {
+    this.db
+      .prepare(
+        `UPDATE auction_list SET order_result = 'failed', order_error = ?, scheduler_phase = 'done' WHERE id = ?`,
+      )
+      .run(msg, auctionId);
+    this.notify('出价失败', msg);
+    this.onListUpdated?.();
+  }
+
   /** 配置变更后重建单条目 runner */
   refreshItem(id: string): void {
     this.runners.get(id)?.dispose();
@@ -96,15 +107,19 @@ export class AuctionScheduler {
     this.bootstrapRunners();
   }
 
-  /** 加入列表或状态变化后，对抢购中条目立即慢轮询 */
+  /** 加入列表或状态变化后，对未过期条目立即慢轮询 */
   pollInProgressNow(auctionId?: string): void {
     if (auctionId) {
       const row = this.db
-        .prepare('SELECT lifecycle_status FROM auction_list WHERE id = ?')
-        .get(auctionId) as { lifecycle_status: string } | undefined;
-      if (row?.lifecycle_status === 'in_progress') {
-        void this.runSlowPollFor([auctionId]);
+        .prepare('SELECT lifecycle_status, data_incomplete FROM auction_list WHERE id = ?')
+        .get(auctionId) as { lifecycle_status: string; data_incomplete: number } | undefined;
+      if (
+        row?.lifecycle_status === 'expired'
+        || row?.data_incomplete === 1
+      ) {
+        return;
       }
+      void this.runSlowPollFor([auctionId]);
       return;
     }
     void this.runSlowPoll();
@@ -274,9 +289,9 @@ export class AuctionScheduler {
     void this.runSlowPollFor([auctionId]);
   }
 
-  /** 60s 慢轮询：仅 in_progress 条目 */
+  /** 60s 慢轮询：未过期条目同步抢购状态与当前价 */
   private async runSlowPoll(): Promise<void> {
-    const ids = listByLifecycle(this.db, 'in_progress').map((r) => r.id);
+    const ids = listActiveForStatusPoll(this.db).map((r) => r.id);
     if (ids.length === 0) return;
     await this.runSlowPollFor(ids);
   }
@@ -284,18 +299,27 @@ export class AuctionScheduler {
   /** 批量 status + 逐条 bidrecords，更新 DB 并检测过期 */
   private async runSlowPollFor(ids: string[]): Promise<void> {
     try {
+      const requestSentAtMs = Date.now();
       const statusJson = await this.jdApi.call(
         JD_FUNCTIONS.CURRENT_AND_OFFER,
         buildStatusBody(ids),
       );
+      const responseReceivedAtMs = Date.now();
 
       for (const id of ids) {
         const parsed = parseStatusResponse(statusJson, id);
-        if (parsed.serverTimeMs) this.clock.addSample(parsed.serverTimeMs);
+        if (parsed.serverTimeMs) {
+          this.clock.addSample(parsed.serverTimeMs, { requestSentAtMs, responseReceivedAtMs });
+        }
 
-        // 无论是否有 address，都更新抢购状态与 last_polled_at
+        // 同步抢购状态与当前价（无论是否有 address）
         this.updateListFromStatus(id, parsed, 'slow_poll');
-        this.maybeExpire(id, parsed);
+        this.syncLifecycleFromStatus(id, parsed);
+
+        const row = this.db
+          .prepare('SELECT lifecycle_status FROM auction_list WHERE id = ?')
+          .get(id) as { lifecycle_status: string } | undefined;
+        if (row?.lifecycle_status !== 'in_progress') continue;
 
         const address = await this.ensureAddress(id);
         if (!address) continue;
@@ -360,8 +384,9 @@ export class AuctionScheduler {
       return;
     }
     if (!row.address) {
-      console.warn(`[出价跳过] ${auctionId}: 缺少 address`);
-      this.notify('出价跳过', '缺少区域 address，无法出价');
+      const msg = '缺少区域 address，无法出价';
+      console.warn(`[出价失败] ${auctionId}: ${msg}`);
+      this.markOfferFailed(auctionId, msg);
       return;
     }
     // 已出过价则不再重复
@@ -375,19 +400,18 @@ export class AuctionScheduler {
       .run(auctionId);
     this.onListUpdated?.();
 
-    // 出价前拉一次最新现价
-    await this.pollStatus(auctionId);
-    row = this.db.prepare('SELECT * FROM auction_list WHERE id = ?').get(auctionId) as typeof row;
-
+    // 快轮询已持续更新现价，触发时直接出价以减少 RTT 损耗
     const price = calcOfferPrice(row?.current_price ?? 0, row?.target_price);
     try {
+      const requestSentAtMs = Date.now();
       const body = buildOfferPriceBody({
         auctionId: row!.id,
         price,
-        ts: Date.now(),
+        ts: this.clock.serverNow(),
         address: row!.address!,
       });
       const json = await this.jdApi.call(JD_FUNCTIONS.OFFER_PRICE, body);
+      this.clock.recordRtt(Date.now() - requestSentAtMs);
       const offerResult = parseOfferPriceResponse(json);
       if (!offerResult.success) {
         throw new Error(offerResult.message);
@@ -398,29 +422,30 @@ export class AuctionScheduler {
       this.notify('出价成功', `${offerResult.message} · ¥${price}`);
       this.onListUpdated?.();
     } catch (err) {
-      if (this.handleApiUnavailable(err)) return;
       const msg = err instanceof Error ? err.message : String(err);
-      this.db
-        .prepare(
-          `UPDATE auction_list SET order_result = 'failed', order_error = ?, scheduler_phase = 'done' WHERE id = ?`,
-        )
-        .run(msg, auctionId);
-      this.notify('出价失败', msg);
-      this.onListUpdated?.();
+      if (this.handleApiUnavailable(err)) {
+        this.markOfferFailed(auctionId, msg);
+        return;
+      }
+      this.markOfferFailed(auctionId, msg);
     }
   }
 
   /** 快轮询：仅拉 status 更新现价与时钟 */
   private async pollStatus(auctionId: string): Promise<void> {
     try {
+      const requestSentAtMs = Date.now();
       const statusJson = await this.jdApi.call(
         JD_FUNCTIONS.CURRENT_AND_OFFER,
         buildStatusBody(auctionId),
       );
+      const responseReceivedAtMs = Date.now();
       const parsed = parseStatusResponse(statusJson, auctionId);
-      if (parsed.serverTimeMs) this.clock.addSample(parsed.serverTimeMs);
+      if (parsed.serverTimeMs) {
+        this.clock.addSample(parsed.serverTimeMs, { requestSentAtMs, responseReceivedAtMs });
+      }
       this.updateListFromStatus(auctionId, parsed, 'fast_poll');
-      this.maybeExpire(auctionId, parsed);
+      this.syncLifecycleFromStatus(auctionId, parsed);
       this.onListUpdated?.();
     } catch (err) {
       if (isWebviewNotReadyError(err)) return;
@@ -440,9 +465,10 @@ export class AuctionScheduler {
     this.db
       .prepare(
         `UPDATE auction_list SET
-          current_price = ?, bid_count = ?, auction_status = ?,
+          current_price = COALESCE(?, current_price),
+          bid_count = COALESCE(?, bid_count),
+          auction_status = COALESCE(?, auction_status),
           auction_end_time = COALESCE(?, auction_end_time),
-          current_bidder = COALESCE(?, current_bidder),
           last_polled_at = ?, scheduler_phase = ?
         WHERE id = ?`,
       )
@@ -451,7 +477,6 @@ export class AuctionScheduler {
         parsed.bidCount,
         parsed.auctionStatus,
         parsed.actualEndTimeMs,
-        parsed.currentBidder,
         new Date().toISOString(),
         phase,
         auctionId,
@@ -467,22 +492,40 @@ export class AuctionScheduler {
     }
   }
 
-  private maybeExpire(
+  /** 根据 status 响应同步 lifecycle，并在变为 expired 时收尾 */
+  private syncLifecycleFromStatus(
     auctionId: string,
     parsed: ReturnType<typeof parseStatusResponse>,
   ): void {
     const row = this.db
-      .prepare('SELECT auction_end_time FROM auction_list WHERE id = ?')
-      .get(auctionId) as { auction_end_time: number | null } | undefined;
+      .prepare(
+        'SELECT lifecycle_status, auction_start_time, auction_end_time FROM auction_list WHERE id = ?',
+      )
+      .get(auctionId) as {
+      lifecycle_status: string;
+      auction_start_time: number | null;
+      auction_end_time: number | null;
+    } | undefined;
+    if (!row) return;
 
-    const endTimeMs = parsed.actualEndTimeMs ?? row?.auction_end_time ?? null;
-
+    const endTimeMs = parsed.actualEndTimeMs ?? row.auction_end_time ?? null;
     const next = resolveLifecycleStatus({
       nowMs: this.clock.serverNow(),
-      startTimeMs: null,
+      startTimeMs: row.auction_start_time,
       endTimeMs,
       platformStatusExpired: parsed.platformStatusExpired,
     });
+
+    if (next === row.lifecycle_status) return;
+
+    this.db
+      .prepare('UPDATE auction_list SET lifecycle_status = ? WHERE id = ?')
+      .run(next, auctionId);
+
+    if (next === 'in_progress') {
+      this.bootstrapRunners();
+      return;
+    }
 
     if (next === 'expired') {
       this.runners.get(auctionId)?.dispose();
