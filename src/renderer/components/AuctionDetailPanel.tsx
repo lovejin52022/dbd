@@ -239,7 +239,7 @@ export default function AuctionDetailPanel({
                     : item.order_result === 'failed'
                       ? (item.order_error ?? '失败')
                       : item.order_result === 'skipped'
-                        ? '跳过'
+                        ? (item.order_error ?? '跳过')
                         : '待触发'}
                 </div>
               </div>

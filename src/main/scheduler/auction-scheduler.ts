@@ -402,6 +402,19 @@ export class AuctionScheduler {
 
     // 快轮询已持续更新现价，触发时直接出价以减少 RTT 损耗
     const price = calcOfferPrice(row?.current_price ?? 0, row?.target_price);
+    // 设置了期望价且当前价已超：跳过抢购
+    if (price == null) {
+      const msg = `当前价 ¥${row.current_price ?? 0} 已超期望价 ¥${row.target_price}`;
+      console.warn(`[出价跳过] ${auctionId}: ${msg}`);
+      this.db
+        .prepare(
+          `UPDATE auction_list SET order_result = 'skipped', order_error = ?, scheduler_phase = 'done' WHERE id = ?`,
+        )
+        .run(msg, auctionId);
+      this.notify('出价跳过', msg);
+      this.onListUpdated?.();
+      return;
+    }
     try {
       const requestSentAtMs = Date.now();
       const body = buildOfferPriceBody({

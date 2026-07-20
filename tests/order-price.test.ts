@@ -7,8 +7,9 @@ describe('calcOfferPrice', () => {
   });
   it('current <= target → target', () => {
     expect(calcOfferPrice(80, 100)).toBe(100);
+    expect(calcOfferPrice(100, 100)).toBe(100);
   });
-  it('current > target → current+1', () => {
-    expect(calcOfferPrice(105, 100)).toBe(106);
+  it('current > target → null（不抢购）', () => {
+    expect(calcOfferPrice(105, 100)).toBeNull();
   });
 });
